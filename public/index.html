@@ -108,9 +108,14 @@
       <div class="relation-board">
         <div class="graph-panel">
           <div class="graph-toolbar">
-            <span class="legend-item synonym" id="legend-sinonim"><i class="dot synonym"></i><b>Sinonim</b><small id="legend-sinonim-count">0</small></span>
-            <span class="legend-item antonym" id="legend-antonim"><i class="dot antonym"></i><b>Antonim</b><small id="legend-antonim-count">0</small></span>
-            <span class="legend-item hierarchy" id="legend-hierarki"><i class="dot hierarchy"></i><b>Hierarki</b><small id="legend-hierarki-count">0</small></span>
+            <button type="button" class="legend-item synonym" id="legend-sinonim" data-graph-type="sinonim" aria-pressed="true"><i class="dot synonym"></i><b>Sinonim</b><small id="legend-sinonim-count">0</small></button>
+            <button type="button" class="legend-item antonym" id="legend-antonim" data-graph-type="antonim" aria-pressed="true"><i class="dot antonym"></i><b>Antonim</b><small id="legend-antonim-count">0</small></button>
+            <button type="button" class="legend-item hierarchy" id="legend-hierarki" data-graph-type="hierarki" aria-pressed="true"><i class="dot hierarchy"></i><b>Hierarki</b><small id="legend-hierarki-count">0</small></button>
+            <label class="graph-search">
+              <span class="visually-hidden">Saring simpul pada peta hubungan</span>
+              <input id="graph-filter" type="search" placeholder="Saring simpul…" autocomplete="off" spellcheck="false">
+            </label>
+            <button type="button" class="graph-reset" id="graph-reset" hidden>Atur ulang</button>
             <strong id="graph-word">Memuat contoh…</strong>
           </div>
           <svg id="relation-graph" viewBox="0 0 760 470" role="img" aria-label="Graf hubungan kata"></svg>
@@ -119,7 +124,7 @@
         <aside class="relation-copy">
           <span class="mini-label">CARA MEMBACA</span>
           <h3>Satu kata,<br><em>banyak tetangga.</em></h3>
-          <p>Relasi memperlihatkan kedekatan makna, lawan kata, serta posisi konsep dari umum ke khusus. Klik simpul mana pun untuk berpindah.</p>
+          <p>Relasi memperlihatkan kedekatan makna, lawan kata, serta posisi konsep dari umum ke khusus. Klik simpul mana pun untuk berpindah, matikan kategori pada legenda, atau ketik untuk menyaring simpul yang tampil.</p>
           <div class="relation-facts">
             <div><strong id="synonym-count">—</strong><span>sinonim<br>aktif</span></div>
             <div><strong id="antonym-count">—</strong><span>antonim<br>aktif</span></div>

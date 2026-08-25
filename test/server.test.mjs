@@ -125,3 +125,32 @@ test('metode selain GET dan HEAD ditolak', async () => {
   const response = await fetch(`${BASE}/api/stats`, { method: 'POST' });
   assert.equal(response.status, 405);
 });
+
+test('alamat aset diberi cap versi agar salinan lama peramban tidak terpakai', async () => {
+  const response = await fetch(`${BASE}/`);
+  assert.equal(response.headers.get('cache-control'), 'no-cache');
+  const html = await response.text();
+  assert.match(html, /src="\/app\.js\?v=[a-z0-9]+"/);
+  assert.match(html, /href="\/styles\.css\?v=[a-z0-9]+"/);
+  assert.doesNotMatch(html, /src="\/app\.js"/);
+});
+
+test('cap versi berubah ketika berkas aset diperbarui', async () => {
+  const assetPath = path.join(ROOT, 'public', 'app.js');
+  const versionOf = async () => /app\.js\?v=([a-z0-9]+)/.exec(await (await fetch(`${BASE}/`)).text())?.[1];
+  const before = await versionOf();
+  const original = fs.statSync(assetPath);
+  try {
+    fs.utimesSync(assetPath, original.atime, new Date(original.mtime.getTime() + 60_000));
+    assert.notEqual(await versionOf(), before);
+  } finally {
+    fs.utimesSync(assetPath, original.atime, original.mtime);
+  }
+  assert.equal(await versionOf(), before);
+});
+
+test('aset beralamat versi tetap dilayani dengan tipe yang benar', async () => {
+  const response = await fetch(`${BASE}/app.js?v=zzz`);
+  assert.equal(response.status, 200);
+  assert.match(response.headers.get('content-type'), /text\/javascript/);
+});

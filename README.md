@@ -74,6 +74,24 @@ mengisi kelas kata pada entri berlabel majemuk seperti `Ar n` atau `n kim`,
 memisahkan lafal `/afdéling/`, mencatat label bidang/ragam/bahasa asal, dan
 membersihkan naskah makna dari sisa kepala lema.
 
+## Peta hubungan kata
+
+Peta hanya sanggup memuat sekitar enam belas simpul sebelum labelnya bertindih,
+jadi jatah simpul dibagi menurut bobot tiap kategori. Dua kendali mengatur apa
+yang tampil:
+
+- **Legenda sebagai saklar.** Klik Sinonim, Antonim, atau Hierarki untuk
+  menyembunyikan kategori itu. Jatah yang ditinggalkan langsung dipakai kategori
+  yang tersisa, sehingga mematikan dua kategori berarti kategori ketiga tampil
+  penuh sampai enam belas simpul.
+- **Kotak saring teks.** Ketik sebagian kata untuk menyaring simpul. Pencarian
+  menelusuri **seluruh** relasi entri, bukan hanya simpul yang sedang tampak,
+  sehingga tetangga yang semula terpotong oleh batas jatah bisa ikut muncul.
+  `Esc` mengosongkan kotak tanpa menutup lembar kata.
+
+Tombol **Atur ulang** muncul begitu salah satu kendali dipakai dan mengembalikan
+peta ke tampilan bawaan.
+
 ## Struktur data
 
 - `entries`: halaman lema utama, naskah definisi yang sudah disanitasi, kelas kata, lafal, dan label.

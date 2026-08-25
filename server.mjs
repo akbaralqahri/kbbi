@@ -231,6 +231,32 @@ const MIME = {
   '.woff2': ['font/woff2', false, 'public, max-age=604800']
 };
 
+// Peramban yang pernah menerima app.js atau styles.css dengan masa simpan panjang
+// tidak akan menanyakannya lagi sampai masa itu habis, sehingga pembaruan kode
+// tampak tidak berpengaruh. Cap waktu berkas disisipkan ke alamat aset agar
+// setiap perubahan menghasilkan alamat baru yang pasti diambil ulang.
+function stampAssets(html) {
+  return html.replace(/\b(src|href)="\/([\w.-]+\.(?:js|css))"/g, (match, attribute, name) => {
+    try {
+      const version = Math.trunc(fs.statSync(path.join(PUBLIC, name)).mtimeMs).toString(36);
+      return `${attribute}="/${name}?v=${version}"`;
+    } catch {
+      return match;
+    }
+  });
+}
+
+function serveDocument(filePath, request, response) {
+  const body = Buffer.from(stampAssets(fs.readFileSync(filePath, 'utf8')), 'utf8');
+  response.writeHead(200, {
+    'content-type': 'text/html; charset=utf-8',
+    'content-length': body.length,
+    'cache-control': 'no-cache'
+  });
+  response.end(request.method === 'HEAD' ? undefined : body);
+  return true;
+}
+
 function serveStatic(requestPath, request, response) {
   const requested = requestPath === '/' ? 'index.html' : decodeURIComponent(requestPath).replace(/^\/+/, '');
   const filePath = path.resolve(PUBLIC, requested);
@@ -244,6 +270,9 @@ function serveStatic(requestPath, request, response) {
   }
   if (!stat.isFile()) return false;
   const extension = path.extname(filePath);
+  // Naskah halaman tidak boleh dijawab 304 dari cap waktunya sendiri: isinya ikut
+  // berubah ketika aset yang dirujuknya diperbarui.
+  if (extension === '.html') return serveDocument(filePath, request, response);
   const [type, isText, cacheControl] = MIME[extension] ?? ['application/octet-stream', false, 'no-cache'];
   const lastModified = stat.mtime.toUTCString();
   if (request.headers['if-modified-since'] === lastModified) {

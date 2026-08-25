@@ -1,13 +1,18 @@
 const state = {
   stats: null, q: '', letter: '', wordClass: '', label: '',
   offset: 0, limit: 18, selected: null, poster: null, listMode: false,
-  showAllLabels: false, loading: false, lastFocus: null, suggestionIndex: -1
+  showAllLabels: false, loading: false, lastFocus: null, suggestionIndex: -1,
+  graphTypes: new Set(['sinonim', 'antonim', 'hierarki']), graphQuery: ''
 };
 const $ = (selector, scope = document) => scope.querySelector(selector);
 const $$ = (selector, scope = document) => [...scope.querySelectorAll(selector)];
 const formatNumber = (value) => new Intl.NumberFormat('id-ID', { notation: value > 999999 ? 'compact' : 'standard', maximumFractionDigits: 1 }).format(value || 0);
 const escapeHtml = (value = '') => String(value).replace(/[&<>'"]/g, (char) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', "'": '&#39;', '"': '&quot;' })[char]);
 const className = (code) => ['n', 'v', 'a', 'adv'].includes(code) ? code : 'unknown';
+// Pintasan papan ketik tidak boleh merebut fokus saat pengguna sedang mengetik,
+// termasuk di kotak saring peta hubungan.
+const isTyping = (element) => element instanceof HTMLElement
+  && (element.tagName === 'INPUT' || element.tagName === 'TEXTAREA' || element.isContentEditable);
 
 async function api(path) {
   const response = await fetch(path);
@@ -218,21 +223,84 @@ function renderEntry(entry) {
     <section class="entry-section"><div class="entry-actions"><a class="source-link" href="${escapeHtml(entry.sourceUrl)}" target="_blank" rel="noreferrer">Lihat halaman sumber di KBBI.web.id <span>↗</span></a><button class="copy-link" type="button" data-copy-link>Salin tautan entri</button></div><p class="data-note">Diambil ${new Date(entry.scrapedAt).toLocaleString('id-ID')}. Basis utama situs sumber mengacu pada KBBI Edisi III dan merupakan hak cipta Badan Bahasa.</p></section>`;
 }
 
+// Peta hanya sanggup memuat sekitar enam belas simpul sebelum labelnya bertindih.
+// Jatah dibagi menurut bobot tiap kategori, lalu dihitung ulang ketika sebagian
+// kategori dimatikan supaya ruang yang kosong terpakai oleh kategori yang tersisa.
+const GRAPH_GROUPS = [
+  { key: 'sinonim', label: 'sinonim', types: ['sinonim'], weight: 7 },
+  { key: 'antonim', label: 'antonim', types: ['antonim'], weight: 4 },
+  { key: 'hierarki', label: 'hierarki', types: ['hipernim', 'hiponim'], weight: 5 }
+];
+const GRAPH_BUDGET = 16;
+const nodeKind = (type) => (type === 'sinonim' || type === 'antonim' ? type : 'other');
+
+function takeInterleaved(lists, count) {
+  const taken = [];
+  for (let depth = 0; taken.length < count && lists.some((list) => depth < list.length); depth += 1) {
+    for (const list of lists) {
+      if (depth < list.length && taken.length < count) taken.push(list[depth]);
+    }
+  }
+  return taken;
+}
+
+function collectGraphGroups(entry) {
+  const needle = state.graphQuery.trim().toLocaleLowerCase('id');
+  const matches = (item) => !needle || item.word.toLocaleLowerCase('id').includes(needle);
+  const groups = GRAPH_GROUPS.map((group) => {
+    const pool = entry.relations.filter((item) => group.types.includes(item.type));
+    return {
+      ...group,
+      enabled: state.graphTypes.has(group.key),
+      total: pool.length,
+      matched: pool.filter(matches).length,
+      lists: group.types.map((type) => pool.filter((item) => item.type === type && matches(item)))
+    };
+  });
+  allocateGraphQuota(groups);
+  for (const group of groups) group.visible = takeInterleaved(group.lists, group.quota);
+  return groups;
+}
+
+// Jatah dibagi menurut bobot, lalu diputar lagi: kategori yang kecocokannya lebih
+// sedikit daripada jatahnya menyerahkan sisanya kepada kategori yang masih punya
+// calon. Tanpa itu, menyaring teks akan menyisakan ruang kosong di peta.
+function allocateGraphQuota(groups) {
+  for (const group of groups) group.quota = 0;
+  let pool = groups.filter((group) => group.enabled && group.matched > 0);
+  let budget = GRAPH_BUDGET;
+  while (budget > 0 && pool.length) {
+    const weightSum = pool.reduce((sum, group) => sum + group.weight, 0);
+    let handed = 0;
+    for (const group of pool) {
+      const want = Math.max(1, Math.round(budget * group.weight / weightSum));
+      const take = Math.min(want, group.matched - group.quota, budget - handed);
+      group.quota += take;
+      handed += take;
+    }
+    if (!handed) break;
+    budget -= handed;
+    pool = pool.filter((group) => group.quota < group.matched);
+  }
+}
+
+function graphEmptyMessage(entry, groups) {
+  const word = entry.displayWord || entry.word;
+  if (!groups.some((group) => group.enabled)) return 'Semua kategori dimatikan. Nyalakan salah satu legenda untuk menggambar jejaring.';
+  if (!groups.some((group) => group.total)) return `Relasi visual untuk “${word}” belum tersedia.`;
+  if (state.graphQuery.trim()) return `Tidak ada simpul yang memuat “${state.graphQuery.trim()}” pada kategori terpilih.`;
+  return `Kategori terpilih tidak memiliki relasi untuk “${word}”.`;
+}
+
 function renderGraph(entry) {
   const svg = $('#relation-graph');
   svg.replaceChildren();
   $('#graph-word').textContent = entry.displayWord || entry.word;
-  const limits = { sinonim: 7, antonim: 4, hipernim: 3, hiponim: 2 };
-  const visibleByType = Object.fromEntries(Object.entries(limits).map(([type, limit]) => [
-    type, entry.relations.filter((item) => item.type === type).slice(0, limit)
-  ]));
-  const visible = Object.values(visibleByType).flat();
-  updateGraphLegend('sinonim', visibleByType.sinonim.length, entry.relations.filter((item) => item.type === 'sinonim').length);
-  updateGraphLegend('antonim', visibleByType.antonim.length, entry.relations.filter((item) => item.type === 'antonim').length);
-  const hierarchyVisible = visibleByType.hipernim.length + visibleByType.hiponim.length;
-  const hierarchyTotal = entry.relations.filter((item) => item.type === 'hipernim' || item.type === 'hiponim').length;
-  updateGraphLegend('hierarki', hierarchyVisible, hierarchyTotal);
-  $('#graph-empty').textContent = visible.length ? '' : `Relasi visual untuk “${entry.displayWord || entry.word}” belum tersedia.`;
+  const groups = collectGraphGroups(entry);
+  for (const group of groups) updateGraphLegend(group);
+  $('#graph-reset').hidden = !state.graphQuery && state.graphTypes.size === GRAPH_GROUPS.length;
+  const visible = groups.flatMap((group) => group.visible).slice(0, GRAPH_BUDGET);
+  $('#graph-empty').textContent = visible.length ? '' : graphEmptyMessage(entry, groups);
   $('#graph-empty').hidden = visible.length > 0;
   if (!visible.length) return;
   const ns = 'http://www.w3.org/2000/svg';
@@ -245,21 +313,38 @@ function renderGraph(entry) {
     const y = cy + Math.sin(angle) * radiusY;
     const line = document.createElementNS(ns, 'line');
     line.setAttribute('x1', cx); line.setAttribute('y1', cy); line.setAttribute('x2', x); line.setAttribute('y2', y);
-    line.setAttribute('class', `graph-line ${item.type === 'sinonim' ? 'sinonim' : item.type === 'antonim' ? 'antonim' : 'other'}`);
+    line.setAttribute('class', `graph-line ${nodeKind(item.type)}`);
     svg.append(line);
-    addGraphNode(svg, { x, y, label: item.word, kind: item.type === 'sinonim' ? 'sinonim' : item.type === 'antonim' ? 'antonim' : 'other', slug: item.slug, radius: 31 });
+    addGraphNode(svg, { x, y, label: item.word, kind: nodeKind(item.type), slug: item.slug, radius: 31, type: item.type });
   });
   addGraphNode(svg, { x: cx, y: cy, label: entry.word, kind: 'center', slug: entry.slug, radius: 55 });
 }
 
-function updateGraphLegend(type, displayed, total) {
-  const item = $(`#legend-${type}`);
-  const count = $(`#legend-${type}-count`);
-  count.textContent = String(displayed);
+function refreshGraph() {
+  if (state.selected) renderGraph(state.selected);
+}
+
+let graphFilterTimer;
+
+function resetGraphFilters() {
+  clearTimeout(graphFilterTimer);
+  state.graphQuery = '';
+  state.graphTypes = new Set(GRAPH_GROUPS.map((group) => group.key));
+  $('#graph-filter').value = '';
+  refreshGraph();
+}
+
+function updateGraphLegend({ key, label, enabled, visible, matched, total }) {
+  const item = $(`#legend-${key}`);
+  const count = $(`#legend-${key}-count`);
+  count.textContent = String(visible.length);
+  item.setAttribute('aria-pressed', String(enabled));
+  item.classList.toggle('off', !enabled);
   item.classList.toggle('empty', total === 0);
-  item.title = total === 0
-    ? `Tidak ada ${type} untuk kata terpilih`
-    : `${displayed} dari ${total} hubungan ${type} ditampilkan`;
+  if (total === 0) item.title = `Tidak ada ${label} untuk kata terpilih`;
+  else if (!enabled) item.title = `${total} hubungan ${label} disembunyikan; klik untuk menampilkan`;
+  else if (state.graphQuery.trim()) item.title = `${visible.length} dari ${matched} ${label} yang cocok (total ${total}); klik untuk menyembunyikan`;
+  else item.title = `${visible.length} dari ${total} hubungan ${label} ditampilkan; klik untuk menyembunyikan`;
 }
 
 function splitGraphLabel(label, maxChars = 11) {
@@ -285,14 +370,14 @@ function splitGraphLabel(label, maxChars = 11) {
   return [lines[0], `${lines.slice(1).join(' ').slice(0, maxChars - 1)}…`];
 }
 
-function addGraphNode(svg, { x, y, label, kind, slug, radius }) {
+function addGraphNode(svg, { x, y, label, kind, slug, radius, type }) {
   const ns = 'http://www.w3.org/2000/svg';
   const group = document.createElementNS(ns, 'g');
   group.setAttribute('class', `graph-node ${kind}`);
   group.setAttribute('transform', `translate(${x} ${y})`);
   group.setAttribute('tabindex', '0');
   group.setAttribute('role', 'button');
-  group.setAttribute('aria-label', label);
+  group.setAttribute('aria-label', type ? `${label} — ${type}` : label);
   const circle = document.createElementNS(ns, 'circle');
   circle.setAttribute('r', radius);
   const text = document.createElementNS(ns, 'text');
@@ -306,7 +391,7 @@ function addGraphNode(svg, { x, y, label, kind, slug, radius }) {
     text.append(tspan);
   });
   const title = document.createElementNS(ns, 'title');
-  title.textContent = label;
+  title.textContent = type ? `${label} — ${type}` : label;
   group.append(circle, text, title);
   if (slug) {
     group.addEventListener('click', () => openEntry(slug));
@@ -504,7 +589,7 @@ function bindEvents() {
   document.addEventListener('keydown', (event) => {
     if (event.key === 'Escape' && $('#entry-modal').classList.contains('open')) closeModal();
     trapFocus(event);
-    if (event.key === '/' && document.activeElement !== $('#search-input') && !$('#entry-modal').classList.contains('open')) {
+    if (event.key === '/' && !isTyping(document.activeElement) && !$('#entry-modal').classList.contains('open')) {
       event.preventDefault();
       $('#search-input').focus();
     }
@@ -539,6 +624,24 @@ function bindEvents() {
     $$('.nav-link').forEach((item) => item.classList.toggle('active', item === button));
     $(`#${button.dataset.section}`).scrollIntoView({ behavior: 'smooth' });
   }));
+  $('.graph-toolbar').addEventListener('click', (event) => {
+    const legend = event.target.closest('[data-graph-type]');
+    if (!legend) return;
+    const key = legend.dataset.graphType;
+    if (state.graphTypes.has(key)) state.graphTypes.delete(key);
+    else state.graphTypes.add(key);
+    refreshGraph();
+  });
+  $('#graph-filter').addEventListener('input', () => {
+    clearTimeout(graphFilterTimer);
+    graphFilterTimer = setTimeout(() => { state.graphQuery = $('#graph-filter').value; refreshGraph(); }, 140);
+  });
+  $('#graph-filter').addEventListener('keydown', (event) => {
+    if (event.key !== 'Escape' || !$('#graph-filter').value) return;
+    event.stopPropagation();
+    resetGraphFilters();
+  });
+  $('#graph-reset').addEventListener('click', () => { resetGraphFilters(); $('#graph-filter').focus(); });
   $('#random-word').addEventListener('click', async () => {
     try {
       const entry = await api('/api/random');
