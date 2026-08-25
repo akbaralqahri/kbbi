@@ -2,16 +2,16 @@ import fs from 'node:fs';
 import http from 'node:http';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { db, getMeta, hydrateEntry } from './lib/db.mjs';
+import { closeDb, db, getMeta, hydrateEntry } from './lib/db.mjs';
+import { LABEL_KIND_NAMES, WORD_CLASSES } from './lib/labels.mjs';
+import { stripSenseHead } from './lib/parser.mjs';
 
 const ROOT = path.dirname(fileURLToPath(import.meta.url));
 const PUBLIC = path.join(ROOT, 'public');
 const PORT = Number(process.env.PORT || 4173);
 const HOST = process.env.HOST || '127.0.0.1';
-const CLASS_LABELS = {
-  n: 'Nomina', v: 'Verba', a: 'Adjektiva', adv: 'Adverbia', num: 'Numeralia',
-  p: 'Partikel', pron: 'Pronomina', '': 'Tidak ditandai'
-};
+const STATS_TTL = 10_000;
+const CLASS_LABELS = { ...Object.fromEntries(WORD_CLASSES), '': 'Tidak ditandai' };
 const REVERSE_RELATION = {
   sinonim: 'sinonim', antonim: 'antonim', rujukan: 'dirujuk oleh',
   hipernim: 'hiponim', hiponim: 'hipernim', meronim: 'holonim', holonim: 'meronim'
@@ -27,7 +27,9 @@ function json(response, data, status = 200) {
   response.end(body);
 }
 
-function getStats() {
+let statsCache = { at: 0, value: null };
+
+function computeStats() {
   const entryCount = db.prepare('SELECT COUNT(*) AS count FROM entries').get().count;
   const lexemeCount = db.prepare('SELECT COUNT(*) AS count FROM lexemes').get().count;
   const queueRows = db.prepare('SELECT state, COUNT(*) AS count FROM crawl_queue GROUP BY state').all();
@@ -42,6 +44,10 @@ function getStats() {
     SELECT UPPER(SUBSTR(word, 1, 1)) AS letter, COUNT(*) AS count
     FROM lexemes WHERE word <> '' GROUP BY letter ORDER BY letter
   `).all().filter((row) => /^[A-Z]$/i.test(row.letter));
+  const byLabel = db.prepare(`
+    SELECT code, label, kind, COUNT(*) AS count FROM entry_labels
+    GROUP BY code, label, kind ORDER BY count DESC
+  `).all();
   return {
     entries: entryCount,
     lexemes: lexemeCount,
@@ -51,58 +57,120 @@ function getStats() {
     relationTotal: relationRows.reduce((sum, row) => sum + row.count, 0),
     byClass,
     byLetter,
+    byLabel,
+    labelKinds: LABEL_KIND_NAMES,
     crawl: {
       state: getMeta('crawl_state', 'idle'),
       sitemapFetchedAt: getMeta('sitemap_fetched_at'),
       lastActivityAt: getMeta('crawl_last_activity_at'),
-      wordnetImportedAt: getMeta('wordnet_imported_at')
+      wordnetImportedAt: getMeta('wordnet_imported_at'),
+      backfillAppliedAt: getMeta('backfill_applied_at')
     },
     edition: 'KBBI Daring Edisi III (arsip)'
   };
 }
 
-function listWords(url) {
+// Agregasi penuh memakan hampir satu detik dan dasbor menyegarkannya berkala,
+// jadi hasilnya ditahan sebentar agar tidak memblokir permintaan lain.
+function getStats() {
+  const now = Date.now();
+  if (statsCache.value && now - statsCache.at < STATS_TTL) return statsCache.value;
+  statsCache = { at: now, value: computeStats() };
+  return statsCache.value;
+}
+
+// FTS5 memerlukan kueri bertanda kutip agar tanda baca pengguna tidak ditafsirkan
+// sebagai operator. Kata terakhir memakai awalan supaya saran ketik terasa hidup.
+function ftsQuery(value) {
+  const tokens = String(value).toLocaleLowerCase('id').match(/[\p{L}\p{N}]+/gu) ?? [];
+  if (!tokens.length) return '';
+  return tokens
+    .map((token, index) => (index === tokens.length - 1 ? `"${token}"*` : `"${token}"`))
+    .join(' AND ');
+}
+
+function buildQuery(url) {
   const q = (url.searchParams.get('q') || '').trim().slice(0, 100);
   const letter = (url.searchParams.get('letter') || '').trim().slice(0, 1);
   const wordClass = (url.searchParams.get('class') || '').trim().slice(0, 12);
-  const limit = Math.min(60, Math.max(1, Number(url.searchParams.get('limit')) || 24));
-  const offset = Math.max(0, Number(url.searchParams.get('offset')) || 0);
+  const label = (url.searchParams.get('label') || '').trim().slice(0, 24);
   const where = [];
   const params = [];
+  let needsEntries = false;
+  const match = q ? ftsQuery(q) : '';
   if (q) {
-    where.push('(l.word LIKE ? COLLATE NOCASE OR l.meaning LIKE ? COLLATE NOCASE OR e.definition_text LIKE ? COLLATE NOCASE)');
-    params.push(`%${q}%`, `%${q}%`, `%${q}%`);
+    if (match) {
+      where.push('(l.word LIKE ? COLLATE NOCASE OR l.entry_slug IN (SELECT slug FROM entries_fts WHERE entries_fts MATCH ?))');
+      params.push(`%${q}%`, match);
+    } else {
+      where.push('l.word LIKE ? COLLATE NOCASE');
+      params.push(`%${q}%`);
+    }
   }
   if (letter) { where.push('l.word LIKE ? COLLATE NOCASE'); params.push(`${letter}%`); }
-  if (wordClass) { where.push('e.word_class = ?'); params.push(wordClass); }
+  if (wordClass) { where.push('e.word_class = ?'); params.push(wordClass); needsEntries = true; }
+  if (label) {
+    where.push('EXISTS (SELECT 1 FROM entry_labels el WHERE el.entry_slug = l.entry_slug AND el.code = ?)');
+    params.push(label);
+  }
+  return { q, letter, wordClass, label, where, params, needsEntries };
+}
+
+function listWords(url) {
+  const limit = Math.min(60, Math.max(1, Number(url.searchParams.get('limit')) || 24));
+  const offset = Math.max(0, Number(url.searchParams.get('offset')) || 0);
+  const { q, where, params, needsEntries } = buildQuery(url);
   const whereSql = where.length ? `WHERE ${where.join(' AND ')}` : '';
+  const ranking = q
+    ? `CASE WHEN LOWER(l.word)=LOWER(?) THEN 0
+            WHEN l.word LIKE ? COLLATE NOCASE THEN 1
+            WHEN l.word LIKE ? COLLATE NOCASE THEN 2
+            ELSE 3 END,`
+    : '';
+  const rankParams = q ? [q, `${q}%`, `%${q}%`] : [];
   const rows = db.prepare(`
-    SELECT e.slug, l.word, e.display_word, e.syllables, e.word_class, e.definition_text,
-      e.scraped_at, l.kind, l.meaning
+    SELECT e.slug, l.word, e.display_word, e.syllables, e.pronunciation, e.word_class,
+      e.labels_json, e.definition_text, e.scraped_at, l.kind, l.meaning
     FROM lexemes l JOIN entries e ON e.slug = l.entry_slug ${whereSql}
-    ORDER BY ${q ? 'CASE WHEN LOWER(l.word)=LOWER(?) THEN 0 WHEN LOWER(l.word) LIKE LOWER(?) THEN 1 ELSE 2 END,' : ''}
-      l.word COLLATE NOCASE, COALESCE(e.homonym, 0)
+    ORDER BY ${ranking} l.word COLLATE NOCASE, COALESCE(e.homonym, 0)
     LIMIT ? OFFSET ?
-  `).all(...params, ...(q ? [q, `${q}%`] : []), limit, offset);
-  const total = db.prepare(`SELECT COUNT(*) AS count FROM lexemes l JOIN entries e ON e.slug=l.entry_slug ${whereSql}`).get(...params).count;
+  `).all(...params, ...rankParams, limit, offset);
+  // Tanpa penyaring tingkat entri, penghitungan tidak perlu menyentuh tabel entries.
+  const total = needsEntries
+    ? db.prepare(`SELECT COUNT(*) AS count FROM lexemes l JOIN entries e ON e.slug=l.entry_slug ${whereSql}`).get(...params).count
+    : db.prepare(`SELECT COUNT(*) AS count FROM lexemes l ${whereSql}`).get(...params).count;
   return {
     items: rows.map((row) => ({
-      slug: row.slug, word: row.word, displayWord: row.kind === 'lema' ? row.display_word : row.word,
-      syllables: row.kind === 'lema' ? row.syllables : '', kind: row.kind,
-      wordClass: row.word_class, wordClassLabel: CLASS_LABELS[row.word_class] ?? row.word_class,
-      summary: row.kind === 'turunan' ? row.meaning : cleanSummary(row.definition_text, row.word, row.word_class), scrapedAt: row.scraped_at
+      slug: row.slug,
+      word: row.word,
+      displayWord: row.kind === 'lema' ? row.display_word : row.word,
+      syllables: row.kind === 'lema' ? row.syllables : '',
+      pronunciation: row.kind === 'lema' ? row.pronunciation : '',
+      kind: row.kind,
+      wordClass: row.word_class,
+      wordClassLabel: CLASS_LABELS[row.word_class] ?? row.word_class,
+      labels: row.kind === 'lema' ? safeLabels(row.labels_json) : [],
+      summary: summaryFor(row),
+      scrapedAt: row.scraped_at
     })),
     total, limit, offset, hasMore: offset + rows.length < total
   };
 }
 
-function cleanSummary(text, word, wordClass) {
-  let result = String(text || '').replace(/\n/g, ' ').replace(/\s+/g, ' ').trim();
-  const head = `${word}${wordClass ? ` ${wordClass}` : ''}`.trim();
-  if (result.toLocaleLowerCase('id').startsWith(head.toLocaleLowerCase('id'))) result = result.slice(head.length).trim();
-  result = result.replace(/^\d+\s*/, '');
-  return result.slice(0, 220);
+function safeLabels(value) {
+  try { return JSON.parse(value); } catch { return []; }
 }
+
+// Makna pertama pada indeks lema sudah bersih sesudah `npm run backfill`, tetapi
+// basis data lama masih menyimpan naskah mentah "ca·ha·ya n 1 sinar…". Pengupasan
+// kepala lema dijalankan lagi di sini agar tampilan benar pada kedua keadaan.
+function summaryFor(row) {
+  const source = row.meaning?.trim() || String(row.definition_text || '');
+  const stripped = stripSenseHead(source.replace(/\s+/g, ' '));
+  return stripped.replace(/^\d+\s*/, '').slice(0, 220);
+}
+
+const relationSlugStmt = db.prepare('SELECT slug FROM entries WHERE word = ? COLLATE NOCASE ORDER BY homonym LIMIT 1');
 
 function getRelations(word) {
   const direct = db.prepare(`
@@ -122,14 +190,12 @@ function getRelations(word) {
   `).all(word).map((row) => ({ ...row, type: REVERSE_RELATION[row.type] ?? row.type }));
   const merged = new Map();
   for (const relation of [...direct, ...reverse]) {
-    const key = `${relation.type}\u0000${relation.word.toLocaleLowerCase('id')}`;
+    const key = `${relation.type} ${relation.word.toLocaleLowerCase('id')}`;
     if (!merged.has(key) || merged.get(key).confidence < relation.confidence) merged.set(key, relation);
   }
-  const candidates = [...merged.values()];
-  const availability = db.prepare('SELECT slug FROM entries WHERE word = ? COLLATE NOCASE ORDER BY homonym LIMIT 1');
-  return candidates.map((item) => ({
+  return [...merged.values()].map((item) => ({
     ...item,
-    slug: availability.get(item.word)?.slug ?? null,
+    slug: relationSlugStmt.get(item.word)?.slug ?? null,
     sourceLabel: item.source === 'wordnet-bahasa' ? 'WordNet Bahasa' : 'KBBI (eksplisit)'
   }));
 }
@@ -152,24 +218,58 @@ function randomWord() {
   return row ? getWord(row.slug) : null;
 }
 
-function serveStatic(requestPath, response) {
-  const requested = requestPath === '/' ? 'index.html' : requestPath.replace(/^\/+/, '');
+// Berkas kode selalu divalidasi ulang lewat last-modified: menyimpannya satu jam
+// membuat peramban menyajikan versi lama sesudah berkas diperbarui. Gambar boleh
+// disimpan lama karena isinya tidak berubah tanpa berganti nama.
+const MIME = {
+  '.html': ['text/html', true, 'no-cache'], '.css': ['text/css', true, 'no-cache'],
+  '.js': ['text/javascript', true, 'no-cache'], '.json': ['application/json', true, 'no-cache'],
+  '.svg': ['image/svg+xml', true, 'public, max-age=86400'],
+  '.png': ['image/png', false, 'public, max-age=86400'],
+  '.ico': ['image/x-icon', false, 'public, max-age=86400'],
+  '.webp': ['image/webp', false, 'public, max-age=86400'],
+  '.woff2': ['font/woff2', false, 'public, max-age=604800']
+};
+
+function serveStatic(requestPath, request, response) {
+  const requested = requestPath === '/' ? 'index.html' : decodeURIComponent(requestPath).replace(/^\/+/, '');
   const filePath = path.resolve(PUBLIC, requested);
   const publicRoot = path.resolve(PUBLIC);
-  if (!filePath.startsWith(`${publicRoot}${path.sep}`) || !fs.existsSync(filePath) || !fs.statSync(filePath).isFile()) return false;
-  const types = { '.html': 'text/html', '.css': 'text/css', '.js': 'text/javascript', '.svg': 'image/svg+xml', '.png': 'image/png', '.ico': 'image/x-icon' };
+  if (!filePath.startsWith(`${publicRoot}${path.sep}`)) return false;
+  let stat;
+  try {
+    stat = fs.statSync(filePath);
+  } catch {
+    return false;
+  }
+  if (!stat.isFile()) return false;
+  const extension = path.extname(filePath);
+  const [type, isText, cacheControl] = MIME[extension] ?? ['application/octet-stream', false, 'no-cache'];
+  const lastModified = stat.mtime.toUTCString();
+  if (request.headers['if-modified-since'] === lastModified) {
+    response.writeHead(304, { 'cache-control': cacheControl }).end();
+    return true;
+  }
   response.writeHead(200, {
-    'content-type': `${types[path.extname(filePath)] || 'application/octet-stream'}; charset=utf-8`,
-    'cache-control': path.extname(filePath) === '.html' ? 'no-cache' : 'public, max-age=3600'
+    'content-type': isText ? `${type}; charset=utf-8` : type,
+    'content-length': stat.size,
+    'last-modified': lastModified,
+    'cache-control': cacheControl
   });
-  fs.createReadStream(filePath).pipe(response);
+  if (request.method === 'HEAD') {
+    response.end();
+    return true;
+  }
+  const stream = fs.createReadStream(filePath);
+  stream.on('error', () => response.destroy());
+  stream.pipe(response);
   return true;
 }
 
 const server = http.createServer((request, response) => {
   const url = new URL(request.url, `http://${request.headers.host || 'localhost'}`);
   try {
-    if (request.method !== 'GET') return json(response, { error: 'Metode tidak didukung' }, 405);
+    if (request.method !== 'GET' && request.method !== 'HEAD') return json(response, { error: 'Metode tidak didukung' }, 405);
     if (url.pathname === '/api/health') return json(response, { ok: true, time: new Date().toISOString() });
     if (url.pathname === '/api/stats') return json(response, getStats());
     if (url.pathname === '/api/words') return json(response, listWords(url));
@@ -182,7 +282,7 @@ const server = http.createServer((request, response) => {
       const item = getWord(slug);
       return item ? json(response, item) : json(response, { error: 'Kata tidak ditemukan' }, 404);
     }
-    if (serveStatic(url.pathname, response)) return;
+    if (serveStatic(url.pathname, request, response)) return;
     json(response, { error: 'Halaman tidak ditemukan' }, 404);
   } catch (error) {
     console.error(error);
@@ -193,3 +293,18 @@ const server = http.createServer((request, response) => {
 server.listen(PORT, HOST, () => {
   console.log(`Ruang Kata aktif di http://${HOST}:${PORT}`);
 });
+
+// Penutupan tertib menuliskan kembali berkas WAL supaya basis data tidak
+// meninggalkan sisa jurnal berukuran besar.
+let closing = false;
+for (const signal of ['SIGINT', 'SIGTERM']) {
+  process.once(signal, () => {
+    if (closing) return;
+    closing = true;
+    server.close(() => {
+      closeDb();
+      process.exit(0);
+    });
+    setTimeout(() => process.exit(0), 3_000).unref();
+  });
+}

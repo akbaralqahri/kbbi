@@ -1,21 +1,27 @@
 import { setTimeout as sleep } from 'node:timers/promises';
 import { db, getMeta, setMeta, upsertEntry } from '../lib/db.mjs';
 import { parseEntryPage, parseSitemap } from '../lib/parser.mjs';
+import { isAllowed, parseRobots } from '../lib/robots.mjs';
 import { slugFromUrl } from '../lib/text.mjs';
 
 const BASE = 'https://kbbi.web.id';
 const SITEMAP = `${BASE}/sitemap.xml`;
 const USER_AGENT = 'RuangKata/1.0 (local educational dashboard; respectful crawler)';
 
+// Alamat yang jelas tidak akan pernah tersedia. Mengulangnya hanya membebani
+// server sumber tanpa peluang berhasil.
+const PERMANENT_STATUS = new Set([400, 401, 403, 404, 405, 410, 414, 451]);
+
+class HttpError extends Error {
+  constructor(status) {
+    super(`HTTP ${status}`);
+    this.status = status;
+    this.permanent = PERMANENT_STATUS.has(status);
+  }
+}
+
 function parseArgs(argv) {
-  const options = {
-    all: false,
-    limit: 30,
-    concurrency: 1,
-    delay: 1500,
-    refresh: false,
-    slugs: []
-  };
+  const options = { all: false, limit: 30, concurrency: 1, delay: 1500, refresh: false, slugs: [] };
   for (const arg of argv) {
     if (arg === '--all') { options.all = true; options.limit = Number.POSITIVE_INFINITY; }
     else if (arg === '--refresh') options.refresh = true;
@@ -36,11 +42,15 @@ async function fetchText(url, attempts = 4) {
         signal: AbortSignal.timeout(30_000)
       });
       if (response.ok) return await response.text();
-      if (response.status !== 429 && response.status < 500) throw new Error(`HTTP ${response.status}`);
+      const error = new HttpError(response.status);
+      // Galat permanen tidak diulang: empat percobaan untuk satu halaman 404
+      // berarti empat permintaan sia-sia dan enam detik jeda per alamat.
+      if (error.permanent) throw error;
       const retryAfter = Number(response.headers.get('retry-after')) * 1_000;
       await sleep(Number.isFinite(retryAfter) && retryAfter > 0 ? retryAfter : attempt * 2_000);
-      lastError = new Error(`HTTP ${response.status}`);
+      lastError = error;
     } catch (error) {
+      if (error instanceof HttpError && error.permanent) throw error;
       lastError = error;
       if (attempt < attempts) await sleep(attempt * 1_500);
     }
@@ -48,29 +58,41 @@ async function fetchText(url, attempts = 4) {
   throw lastError;
 }
 
-async function ensureCrawlAllowed() {
-  let robots;
+async function loadRobots() {
+  let text;
   try {
-    robots = await fetchText(`${BASE}/robots.txt`, 5);
+    text = await fetchText(`${BASE}/robots.txt`, 5);
   } catch (error) {
-    // Hanya gunakan hasil pemeriksaan lama bila sebelumnya robots.txt sudah berhasil dibaca.
-    if (getMeta('robots_allowed') === 'true') {
-      console.warn(`robots.txt sementara tidak dapat diakses (${error.message}); memakai hasil pemeriksaan sebelumnya.`);
-      return;
+    const cached = getMeta('robots_body');
+    if (cached !== null) {
+      console.warn(`robots.txt sementara tidak dapat diakses (${error.message}); memakai salinan pemeriksaan sebelumnya.`);
+      text = cached;
+    } else {
+      throw error;
     }
-    throw error;
   }
-  const disallowRoot = /user-agent:\s*\*[\s\S]*?disallow:\s*\/\s*(?:\r?\n|$)/i.test(robots);
-  if (disallowRoot) throw new Error('robots.txt melarang pengambilan data. Proses dihentikan.');
+  const robots = parseRobots(text, USER_AGENT);
+  if (robots.blocksEverything) throw new Error('robots.txt melarang pengambilan data. Proses dihentikan.');
+  setMeta('robots_body', text);
   setMeta('robots_allowed', 'true');
+  setMeta('robots_crawl_delay', robots.crawlDelay);
   setMeta('robots_checked_at', new Date().toISOString());
+  if (robots.crawlDelay) console.log(`robots.txt meminta jeda ${robots.crawlDelay} detik antarpermintaan.`);
+  return robots;
 }
 
-async function enqueueSitemap(refresh = false) {
+function pathOf(url) {
+  try { return new URL(url).pathname; } catch { return '/'; }
+}
+
+async function enqueueSitemap(robots, refresh = false) {
   const known = Number(getMeta('sitemap_url_count', 0));
   if (known && !refresh) return known;
   console.log('Mengambil sitemap resmi...');
-  const urls = parseSitemap(await fetchText(SITEMAP));
+  const all = parseSitemap(await fetchText(SITEMAP));
+  const urls = all.filter((url) => isAllowed(robots, pathOf(url)));
+  const blocked = all.length - urls.length;
+  if (blocked) console.log(`${blocked} alamat dilewati karena dilarang robots.txt.`);
   const insert = db.prepare(`
     INSERT OR IGNORE INTO crawl_queue(url, slug, state, attempts, queued_at, updated_at)
     VALUES (?, ?, 'pending', 0, ?, ?)
@@ -85,6 +107,7 @@ async function enqueueSitemap(refresh = false) {
     throw error;
   }
   setMeta('sitemap_url_count', urls.length);
+  setMeta('sitemap_blocked_count', blocked);
   setMeta('sitemap_fetched_at', now);
   console.log(`${urls.length.toLocaleString('id-ID')} URL masuk ke antrean.`);
   return urls.length;
@@ -122,9 +145,11 @@ async function main() {
   // Memulihkan pekerjaan yang tertinggal bila proses sebelumnya dimatikan paksa.
   db.prepare("UPDATE crawl_queue SET state='pending', updated_at=? WHERE state='working'").run(new Date().toISOString());
   if (getMeta('crawl_state') === 'running') setMeta('crawl_state', 'paused');
-  await ensureCrawlAllowed();
-  await enqueueSitemap(options.refresh);
-  const jobs = selectJobs(options);
+  const robots = await loadRobots();
+  await enqueueSitemap(robots, options.refresh);
+  const delay = Math.max(options.delay, robots.crawlDelay * 1_000);
+  if (delay > options.delay) console.log(`Jeda dinaikkan menjadi ${delay} ms mengikuti robots.txt.`);
+  const jobs = selectJobs(options).filter((job) => isAllowed(robots, pathOf(job.url)));
   if (!jobs.length) {
     console.log('Tidak ada entri yang perlu diambil.');
     return;
@@ -155,18 +180,21 @@ async function main() {
       const index = cursor++;
       if (index >= jobs.length) return;
       const job = jobs[index];
-      const now = new Date().toISOString();
-      markWorking.run(now, job.url);
+      markWorking.run(new Date().toISOString(), job.url);
       try {
         const html = await fetchText(job.url);
-        const entry = parseEntryPage(html, { slug: job.slug, sourceUrl: job.url });
-        upsertEntry(entry);
+        upsertEntry(parseEntryPage(html, { slug: job.slug, sourceUrl: job.url }));
         markDone.run(new Date().toISOString(), job.url);
         completed += 1;
         consecutiveFailures = 0;
       } catch (error) {
         const message = String(error.message ?? error).slice(0, 500);
-        if (/lema utama tidak ditemukan|#d1 tidak ditemukan/i.test(message)) {
+        // Halaman tanpa definisi dan alamat yang hilang permanen sama-sama tidak
+        // perlu dicoba lagi; keduanya disimpan sebagai dilewati, bukan gagal.
+        const permanent = error instanceof HttpError
+          ? error.permanent
+          : /lema utama tidak ditemukan|#d1 tidak ditemukan/i.test(message);
+        if (permanent) {
           markSkipped.run(message, new Date().toISOString(), job.url);
           skipped += 1;
           consecutiveFailures = 0;
@@ -191,7 +219,7 @@ async function main() {
         setMeta('crawl_state', 'running');
         consecutiveFailures = 0;
       }
-      await sleep(options.delay);
+      await sleep(delay);
     }
   }
 

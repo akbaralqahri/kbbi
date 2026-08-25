@@ -10,6 +10,8 @@
     "scrape": "node scripts/scrape.mjs --all",
     "scrape:sample": "node scripts/scrape.mjs --limit=30",
     "repair:sitemap": "node scripts/repair-sitemap.mjs",
+    "backfill": "node scripts/backfill.mjs",
+    "backfill:apply": "node scripts/backfill.mjs --apply",
     "relations": "node scripts/import-wordnet.mjs",
     "status": "node scripts/status.mjs",
     "test": "node --test"
@@ -20,5 +22,6 @@
   "dependencies": {
     "id-wordnet": "1.0.9",
     "wordnet": "2.0.0"
-  }
+  },
+  "license": "MIT"
 }

@@ -46,7 +46,7 @@
       </div>
 
       <aside class="word-poster" aria-label="Kata pilihan">
-        <div class="poster-top"><span>KATA HARI INI</span><span id="poster-index">001 / —</span></div>
+        <div class="poster-top"><span>KATA HARI INI</span><span id="poster-index">memuat…</span></div>
         <div class="poster-orbit" aria-hidden="true"><span></span><i></i></div>
         <div class="poster-content">
           <small id="poster-class">NOMINA</small>
@@ -77,6 +77,11 @@
           <div id="class-filters" class="class-filters"></div>
           <label>Huruf awal</label>
           <div id="letter-filters" class="letter-filters"></div>
+          <div id="label-filter-block" hidden>
+            <label>Label bidang &amp; ragam</label>
+            <div id="label-filters" class="label-filters"></div>
+            <button id="label-toggle" class="label-toggle" type="button" hidden></button>
+          </div>
           <div class="coverage-card">
             <div class="coverage-title"><span>Progres koleksi</span><b id="coverage-number">0%</b></div>
             <div class="progress"><i id="coverage-bar"></i></div>
@@ -126,7 +131,7 @@
 
   <div id="entry-modal" class="modal" aria-hidden="true">
     <button class="modal-backdrop" data-close-modal aria-label="Tutup detail"></button>
-    <article class="entry-sheet" role="dialog" aria-modal="true" aria-labelledby="entry-title">
+    <article class="entry-sheet" role="dialog" aria-modal="true" aria-labelledby="entry-title" tabindex="-1">
       <button class="close-modal" data-close-modal aria-label="Tutup">×</button>
       <div id="entry-content"></div>
     </article>
