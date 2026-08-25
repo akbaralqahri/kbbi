@@ -1,0 +1,142 @@
+<!doctype html>
+<html lang="id">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="description" content="Dashboard interaktif untuk menjelajahi definisi dan relasi kata bahasa Indonesia.">
+  <title>Ruang Kata — Atlas Bahasa Indonesia</title>
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><rect width='100' height='100' rx='20' fill='%23dfff00'/><text x='50' y='66' text-anchor='middle' font-size='58' font-family='serif'>R</text></svg>">
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <div class="noise" aria-hidden="true"></div>
+  <header class="site-header">
+    <a class="brand" href="#beranda" aria-label="Ruang Kata">
+      <span class="brand-mark">R</span>
+      <span><b>RUANG</b><i>KATA</i></span>
+    </a>
+    <nav aria-label="Navigasi utama">
+      <button class="nav-link active" data-section="beranda">Beranda</button>
+      <button class="nav-link" data-section="jelajah">Jelajah</button>
+      <button class="nav-link" data-section="relasi">Relasi</button>
+    </nav>
+    <button id="random-word" class="random-button" type="button"><span>↝</span> Kata acak</button>
+  </header>
+
+  <main>
+    <section class="hero" id="beranda">
+      <div class="hero-copy">
+        <div class="eyebrow"><span></span> Atlas leksikal bahasa Indonesia</div>
+        <h1>Kata bukan sekadar <em>arti.</em></h1>
+        <p>Telusuri definisi, turunan, sinonim, antonim, dan hubungan makna dalam satu ruang yang hidup.</p>
+        <form class="search-shell" id="search-form" role="search">
+          <span class="search-icon" aria-hidden="true">⌕</span>
+          <input id="search-input" autocomplete="off" placeholder="Cari kata—misalnya: cahaya" aria-label="Cari kata">
+          <kbd>Enter</kbd>
+          <button type="submit">Jelajahi</button>
+          <div id="search-suggestions" class="suggestions" hidden></div>
+        </form>
+        <div class="quick-links" aria-label="Contoh pencarian">
+          <span>Coba</span>
+          <button data-query="bahagia">bahagia</button>
+          <button data-query="cahaya">cahaya</button>
+          <button data-query="belajar">belajar</button>
+          <button data-query="ruang">ruang</button>
+        </div>
+      </div>
+
+      <aside class="word-poster" aria-label="Kata pilihan">
+        <div class="poster-top"><span>KATA HARI INI</span><span id="poster-index">001 / —</span></div>
+        <div class="poster-orbit" aria-hidden="true"><span></span><i></i></div>
+        <div class="poster-content">
+          <small id="poster-class">NOMINA</small>
+          <strong id="poster-word">ruang</strong>
+          <p id="poster-syllables">ru·ang</p>
+        </div>
+        <button id="open-poster" type="button">Buka entri <span>↗</span></button>
+      </aside>
+    </section>
+
+    <section class="ticker" aria-label="Ringkasan data">
+      <div><span class="pulse"></span><b id="crawl-label">Data lokal siap</b></div>
+      <div><strong id="stat-entries">0</strong><span>entri terkoleksi</span></div>
+      <div><strong id="stat-relations">0</strong><span>relasi semantik</span></div>
+      <div><strong id="stat-coverage">0%</strong><span>cakupan sitemap</span></div>
+    </section>
+
+    <section class="workspace" id="jelajah">
+      <div class="section-heading">
+        <div><span class="section-no">01</span><h2>Jelajah kosakata</h2></div>
+        <p>Urutkan lewat abjad, kelas kata, atau cari langsung di dalam definisi.</p>
+      </div>
+
+      <div class="explorer-grid">
+        <aside class="filters">
+          <div class="filter-head"><b>FILTER</b><button id="reset-filter">Atur ulang</button></div>
+          <label>Kelas kata</label>
+          <div id="class-filters" class="class-filters"></div>
+          <label>Huruf awal</label>
+          <div id="letter-filters" class="letter-filters"></div>
+          <div class="coverage-card">
+            <div class="coverage-title"><span>Progres koleksi</span><b id="coverage-number">0%</b></div>
+            <div class="progress"><i id="coverage-bar"></i></div>
+            <small id="coverage-detail">Memuat status…</small>
+          </div>
+        </aside>
+
+        <div class="word-results">
+          <div class="results-head">
+            <p><b id="result-count">0</b> hasil <span id="result-context">terbaru</span></p>
+            <div class="view-toggle" aria-label="Mode tampilan"><button class="active" title="Kartu">▦</button><button title="Daftar">☰</button></div>
+          </div>
+          <div id="word-grid" class="word-grid" aria-live="polite"></div>
+          <button id="load-more" class="load-more" hidden>Muat lebih banyak <span>↓</span></button>
+        </div>
+      </div>
+    </section>
+
+    <section class="relation-section" id="relasi">
+      <div class="section-heading light">
+        <div><span class="section-no">02</span><h2>Peta hubungan kata</h2></div>
+        <p>Pilih sebuah kata untuk melihat jejaring maknanya dari WordNet Bahasa dan rujukan eksplisit KBBI.</p>
+      </div>
+      <div class="relation-board">
+        <div class="graph-panel">
+          <div class="graph-toolbar">
+            <span class="legend-item synonym" id="legend-sinonim"><i class="dot synonym"></i><b>Sinonim</b><small id="legend-sinonim-count">0</small></span>
+            <span class="legend-item antonym" id="legend-antonim"><i class="dot antonym"></i><b>Antonim</b><small id="legend-antonim-count">0</small></span>
+            <span class="legend-item hierarchy" id="legend-hierarki"><i class="dot hierarchy"></i><b>Hierarki</b><small id="legend-hierarki-count">0</small></span>
+            <strong id="graph-word">Memuat contoh…</strong>
+          </div>
+          <svg id="relation-graph" viewBox="0 0 760 470" role="img" aria-label="Graf hubungan kata"></svg>
+          <p id="graph-empty" class="graph-empty">Pilih sebuah entri untuk menggambar jejaring.</p>
+        </div>
+        <aside class="relation-copy">
+          <span class="mini-label">CARA MEMBACA</span>
+          <h3>Satu kata,<br><em>banyak tetangga.</em></h3>
+          <p>Relasi memperlihatkan kedekatan makna, lawan kata, serta posisi konsep dari umum ke khusus. Klik simpul mana pun untuk berpindah.</p>
+          <div class="relation-facts">
+            <div><strong id="synonym-count">—</strong><span>sinonim<br>aktif</span></div>
+            <div><strong id="antonym-count">—</strong><span>antonim<br>aktif</span></div>
+          </div>
+        </aside>
+      </div>
+    </section>
+  </main>
+
+  <div id="entry-modal" class="modal" aria-hidden="true">
+    <button class="modal-backdrop" data-close-modal aria-label="Tutup detail"></button>
+    <article class="entry-sheet" role="dialog" aria-modal="true" aria-labelledby="entry-title">
+      <button class="close-modal" data-close-modal aria-label="Tutup">×</button>
+      <div id="entry-content"></div>
+    </article>
+  </div>
+
+  <footer>
+    <div class="brand footer-brand"><span class="brand-mark">R</span><span><b>RUANG</b><i>KATA</i></span></div>
+    <p>Definisi bersumber dari arsip KBBI Daring Edisi III. Relasi semantik dari WordNet Bahasa.</p>
+    <p>Proyek lokal untuk eksplorasi dan riset bahasa.</p>
+  </footer>
+  <script type="module" src="/app.js"></script>
+</body>
+</html>
