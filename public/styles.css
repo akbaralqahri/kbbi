@@ -185,6 +185,10 @@ button:focus-visible, input:focus-visible, a:focus-visible { outline: 3px solid 
 .visually-hidden { position: absolute; width: 1px; height: 1px; margin: -1px; padding: 0; overflow: hidden; clip-path: inset(50%); white-space: nowrap; border: 0; }
 .graph-line { stroke-width: 1.5; opacity: .72; }.graph-line.sinonim { stroke: var(--cyan); }.graph-line.antonim { stroke: var(--orange); stroke-dasharray: 6 5; }.graph-line.other { stroke: var(--purple); }
 .graph-node { cursor: pointer; }.graph-node circle { stroke: #19191b; stroke-width: 2; }.graph-node:hover circle,.graph-node:focus-visible circle { stroke: #fff; stroke-width: 3; }.graph-node text { fill: var(--ink); font: 700 10px var(--sans); text-anchor: middle; pointer-events: none; }.graph-node.center text { font-family: var(--serif); font-size: 18px; font-style: italic; }.graph-node.center circle { fill: var(--lime); }.graph-node.sinonim circle { fill: var(--cyan); }.graph-node.antonim circle { fill: var(--orange); }.graph-node.other circle { fill: var(--purple); }
+.graph-note { flex: 0 0 auto; margin: 0; padding: 9px 18px; border-bottom: 1px solid rgba(255,255,255,.1); background: rgba(157,140,255,.13); color: #cfcec8; font-size: 10px; line-height: 1.55; }
+.graph-line.derived { stroke-dasharray: 3 4; opacity: .5; }
+.graph-node.derived { opacity: .82; }.graph-node.derived circle { stroke-dasharray: 4 3; }
+.relation-group.derived > span { color: #8a7bd8; }.relation-group.derived > span b { color: var(--orange); font: inherit; }
 .graph-empty { position: absolute; inset: 45% 20px auto; text-align: center; color: #898985; }
 .relation-copy { padding: 54px 42px; border-left: 1px solid rgba(255,255,255,.2); display: flex; flex-direction: column; }
 .mini-label { color: var(--lime); font-size: 10px; letter-spacing: .15em; }

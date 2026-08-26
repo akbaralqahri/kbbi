@@ -22,8 +22,9 @@ npm run scrape
 ```
 
 Sitemap sumber memuat sejumlah permalink yang menggabungkan lema dan bentuk
-turunannya menjadi satu alamat yang tidak valid. Setelah crawl utama selesai,
-audit dan perbaiki alamat tersebut, kemudian lanjutkan scraper:
+turunannya menjadi satu alamat yang tidak valid, misalnya
+`adikadik bungsuadik iparadik seayah…`. Setelah crawl utama selesai, audit dan
+perbaiki alamat tersebut, kemudian lanjutkan scraper:
 
 ```powershell
 npm run repair:sitemap
@@ -31,9 +32,27 @@ node scripts/repair-sitemap.mjs --apply
 node scripts/scrape.mjs --all --concurrency=2 --delay=2000
 ```
 
-Perintah audit tidak mengubah database. Daftar KBBI Edisi IV dari repositori
-`dyazincahya/KBBI-SQL-database` hanya dipakai untuk mengenali batas lema pada
-alamat yang rusak; arti dan naskah definisi tetap diambil dari `kbbi.web.id`.
+Perbaikan mengantre **setiap** prefiks lema yang dikenal pada slug rusak, bukan
+hanya yang terpanjang. Pada contoh di atas, prefiks yang sah adalah `adi`,
+`adik`, dan `adika`; mengambil yang terpanjang saja membuat `adik` tidak pernah
+diminta ke server.
+
+Prefiks slug rusak tetap tidak menemukan semua lema. Untuk menyisir sisanya,
+tambahkan `--probe-wordlist`, yang mengantre setiap kata daftar acuan yang belum
+ada di koleksi:
+
+```powershell
+node scripts/repair-sitemap.mjs --probe-wordlist
+node scripts/repair-sitemap.mjs --probe-wordlist --apply
+```
+
+Mode ini menambah sekitar 9.400 alamat, yaitu kira-kira 4 jam crawl pada jeda
+bawaan. Perintah tanpa `--apply` tidak mengubah database.
+
+Daftar KBBI Edisi IV dari repositori `dyazincahya/KBBI-SQL-database` hanya
+dipakai untuk mengenali batas lema pada alamat yang rusak dan untuk menebak
+alamat yang belum diminta; arti dan naskah definisi tetap diambil dari
+`kbbi.web.id`.
 
 Scraper akan:
 
@@ -74,6 +93,17 @@ mengisi kelas kata pada entri berlabel majemuk seperti `Ar n` atau `n kim`,
 memisahkan lafal `/afdéling/`, mencatat label bidang/ragam/bahasa asal, dan
 membersihkan naskah makna dari sisa kepala lema.
 
+Dua pola kepala lema juga dibetulkan di sini:
+
+- **Halaman pengalihan ejaan.** Sebagian halaman hanya berisi `<b>ak·te ? akta</b>`
+  (panah aslinya sudah hilang menjadi tanda tanya pada naskah sumber). Seluruh
+  baris itu sebelumnya tersimpan sebagai nama kata, sehingga `akte` tidak dapat
+  dicari sama sekali. Kini terurai menjadi lema `akte` beserta relasi rujukan ke
+  `akta`, memulihkan 1.786 kata sekaligus menambah rujukan silang KBBI asli dari
+  350 menjadi lebih dari 2.000.
+- **Nomor homonim berupa teks biasa.** Halaman seperti `<b>aib 1 </b>` menulis
+  nomor homonim di luar `<sup>`, sehingga tersimpan sebagai kata `aib 1`.
+
 ## Peta hubungan kata
 
 Peta hanya sanggup memuat sekitar enam belas simpul sebelum labelnya bertindih,
@@ -91,6 +121,50 @@ yang tampil:
 
 Tombol **Atur ulang** muncul begitu salah satu kendali dipakai dan mengembalikan
 peta ke tampilan bawaan.
+
+### Kenapa banyak entri petanya kosong
+
+Hampir seluruh jejaring berasal dari WordNet Bahasa; halaman KBBI sendiri jarang
+menyebut sinonim secara tertulis (350 rujukan eksplisit berbanding 1,8 juta relasi
+WordNet). Kosakata WordNet jauh lebih sempit daripada KBBI, sehingga entri yang
+jarang, arkais, kedaerahan, atau teknis memang tidak punya tetangga.
+
+Ada satu ketidakcocokan struktural yang penting: **WordNet mendaftarkan bentuk
+berimbuhan sebagai lema tersendiri, sedangkan KBBI menyimpannya di bawah lema
+induk.** `bercahaya` punya entri sendiri di WordNet, tetapi di KBBI ia hanya
+bagian dari entri `cahaya`. Dua penyesuaian menjembatani hal itu:
+
+- Pencarian tautan relasi menelusuri tabel `lexemes`, bukan hanya `entries`,
+  sehingga pil yang menunjuk bentuk turunan membuka entri induknya. Bagian relasi
+  yang dapat diklik naik dari 40% menjadi 80%.
+- Entri yang tidak dikenal WordNet menampilkan relasi milik bentuk turunannya
+  pada bagian terpisah dan pada peta dengan garis putus-putus, selalu disertai
+  keterangan asalnya. Jumlah entri yang petanya terisi naik dari 10.646 (30,9%)
+  menjadi 11.711 (34,0%).
+
+Sisanya, sekitar dua pertiga entri, memang berada di luar jangkauan WordNet.
+Peta menyatakan hal itu apa adanya alih-alih menampilkan kanvas kosong.
+
+## Cakupan terhadap KBBI
+
+Diukur terhadap daftar KBBI Edisi IV (71.093 kata) sebagai acuan independen:
+
+| | jumlah | |
+|---|---|---|
+| ada sebagai lema utama | 29.931 | 42,1% |
+| ada sebagai bentuk turunan | 31.447 | 44,2% |
+| belum ada | 9.715 | 13,7% |
+
+Sebagian dari yang belum ada memang tambahan Edisi IV yang tidak dimuat arsip
+Edisi III, tetapi tidak semuanya: `adik`, `amnesia`, dan `alih fungsi` punya
+halaman lengkap di `kbbi.web.id` dan tetap terlewat karena sitemap hanya memuat
+slug gabungannya. Menjalankan `repair:sitemap` versi baru dan
+`--probe-wordlist` menutup sebagian besar sisa itu.
+
+Perlu diingat bahwa `kbbi.web.id` hanya memuat halaman untuk lema pokok. Bentuk
+turunan seperti `belajar` tidak punya halaman sendiri di sana — ia tercatat di
+dalam halaman `ajar`, dan koleksi ini menyimpannya sebagai bentuk turunan di
+entri yang sama. Mencarinya tetap ketemu.
 
 ## Struktur data
 
@@ -110,7 +184,7 @@ Database berada di `data/kbbi.db` dan sengaja tidak dimasukkan Git.
 
 ```powershell
 npm run dev     # server dengan muat ulang otomatis
-npm test        # 32 pengujian: pengurai, robots.txt, dan API server
+npm test        # 45 pengujian: pengurai, robots.txt, dan API server
 ```
 
 Pengujian server menjalankan salinan `server.mjs` pada basis data sementara,

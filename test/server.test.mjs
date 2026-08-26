@@ -14,17 +14,31 @@ const BASE = `http://127.0.0.1:${PORT}`;
 
 process.env.KBBI_DB_PATH = DB_PATH;
 
-const { upsertEntry, closeDb } = await import('../lib/db.mjs');
+const { upsertEntry, insertRelation, closeDb } = await import('../lib/db.mjs');
 const { parseDefinition } = await import('../lib/parser.mjs');
 
 const FIXTURES = [
   ['cahaya', '<b>ca·ha·ya</b> <em>n</em> <b>1</b> sinar atau terang; <b>2</b> kilau gemerlap;<br><b>-- mata</b> kekasih'],
   ['afdeling', '<b>af·de·ling</b> /afdéling/ <em>Bld n</em> seksi; bagian; divisi'],
-  ['abangan', '<b>a·ba·ngan</b> <em>Jw n</em> golongan penganut agama yang tidak taat']
+  ['abangan', '<b>a·ba·ngan</b> <em>Jw n</em> golongan penganut agama yang tidak taat'],
+  ['terang', '<b>te·rang</b> <em>a</em> keadaan bercahaya'],
+  ['bugar', '<b>bu·gar</b> <em>a</em> sehat dan segar;<br><b>ke·bu·gar·an</b> hal ihwal bugar']
 ];
 
 for (const [slug, html] of FIXTURES) {
   upsertEntry(parseDefinition(html, { slug, sourceUrl: `https://kbbi.web.id/${slug}` }));
+}
+
+// "cahaya mata" dan "kebugaran" hanya ada sebagai bentuk turunan, persis seperti
+// keadaan nyata ketika WordNet mengenal bentuk berimbuhan yang tidak punya lema
+// sendiri di KBBI.
+for (const relation of [
+  { sourceWord: 'cahaya', targetWord: 'terang', type: 'sinonim' },
+  { sourceWord: 'terang', targetWord: 'cahaya mata', type: 'sinonim' },
+  { sourceWord: 'kebugaran', targetWord: 'kesegaran', type: 'sinonim' },
+  { sourceWord: 'kebugaran', targetWord: 'kelesuan', type: 'antonim' }
+]) {
+  insertRelation({ ...relation, source: 'wordnet-bahasa', confidence: 0.9 });
 }
 
 const server = spawn(process.execPath, [path.join(ROOT, 'server.mjs')], {
@@ -86,7 +100,7 @@ test('penyaring label menyaring berdasarkan bidang atau bahasa asal', async () =
 
 test('statistik memuat rekap label dan kelas kata', async () => {
   const { body } = await api('/api/stats');
-  assert.equal(body.entries, 3);
+  assert.equal(body.entries, FIXTURES.length);
   const kode = body.byLabel.map((item) => item.code).sort();
   assert.deepEqual(kode, ['bld', 'jw']);
   assert.ok(body.byClass.some((item) => item.code === 'n' && item.count > 0));
@@ -124,6 +138,44 @@ test('berkas di luar folder publik tidak dapat diambil', async () => {
 test('metode selain GET dan HEAD ditolak', async () => {
   const response = await fetch(`${BASE}/api/stats`, { method: 'POST' });
   assert.equal(response.status, 405);
+});
+
+test('relasi yang menunjuk bentuk turunan tetap dapat dibuka lewat entri induknya', async () => {
+  const { body } = await api('/api/words/terang');
+  const pil = body.relations.find((item) => item.word === 'cahaya mata');
+  assert.ok(pil, 'relasi ke bentuk turunan seharusnya ada');
+  assert.equal(pil.slug, 'cahaya');
+  assert.equal(pil.hostWord, 'cahaya');
+});
+
+test('relasi ke lema utama tidak ditandai sebagai bentuk turunan', async () => {
+  const { body } = await api('/api/words/cahaya');
+  const pil = body.relations.find((item) => item.word === 'terang');
+  assert.equal(pil.slug, 'terang');
+  assert.equal(pil.hostWord, null);
+});
+
+test('lema di luar WordNet memakai relasi bentuk turunannya, dengan asal yang jelas', async () => {
+  const { body } = await api('/api/words/bugar');
+  assert.deepEqual(body.relations, []);
+  assert.equal(body.derivedRelations.length, 2);
+  const sinonim = body.derivedRelations.find((item) => item.type === 'sinonim');
+  assert.equal(sinonim.word, 'kesegaran');
+  assert.equal(sinonim.via, 'kebugaran');
+  assert.equal(sinonim.derived, true);
+  assert.ok(body.derivedRelationGroups.antonim);
+});
+
+test('lema yang dikenal WordNet tidak dicampuri relasi bentuk turunan', async () => {
+  const { body } = await api('/api/words/cahaya');
+  assert.ok(body.relations.length > 0);
+  assert.deepEqual(body.derivedRelations, []);
+});
+
+test('lema tanpa relasi sama sekali menghasilkan dua daftar kosong', async () => {
+  const { body } = await api('/api/words/abangan');
+  assert.deepEqual(body.relations, []);
+  assert.deepEqual(body.derivedRelations, []);
 });
 
 test('alamat aset diberi cap versi agar salinan lama peramban tidak terpakai', async () => {

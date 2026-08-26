@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { extractElementInnerById, extractMarkers, parseDefinition, parseEntryPage, parseSitemap, stripSenseHead } from '../lib/parser.mjs';
+import { extractElementInnerById, extractMarkers, parseDefinition, parseEntryPage, parseRedirectHead, parseSitemap, stripSenseHead } from '../lib/parser.mjs';
 import { decodeHtml, sanitizeDefinition, slugFromUrl } from '../lib/text.mjs';
 
 const FIXTURE = `<!doctype html><html><body>
@@ -95,6 +95,41 @@ test('makna pertama bersih dari kepala lema, lafal, dan label', () => {
 test('tanda -- pada bentuk turunan diganti lema induk', () => {
   const entry = parse('<b>acuh</b> <em>v</em> peduli;<br><b>acuh tak --</b> tidak peduli');
   assert.deepEqual(entry.derivatives.map((item) => item.word), ['acuh tak acuh']);
+});
+
+test('halaman pengalihan ejaan menjadi lema tersendiri berikut rujukannya', () => {
+  const entry = parse('<b>ak&#183;te ? akta</b>');
+  assert.equal(entry.word, 'akte');
+  assert.equal(entry.syllables, 'ak·te');
+  assert.equal(entry.senses[0].text, 'Lihat “akta”.');
+  assert.deepEqual(entry.relations, [{ type: 'rujukan', target: 'akta', source: 'kbbi-explicit', confidence: 1 }]);
+  assert.deepEqual(entry.derivatives, []);
+});
+
+test('panah pengalihan dalam bentuk asli juga dikenali', () => {
+  assert.equal(parse('<b>ab&#183;lur → hablur</b>').word, 'ablur');
+  assert.equal(parseRedirectHead('adi·kan·da ? adinda').target, 'adinda');
+  assert.equal(parseRedirectHead('ca·ha·ya'), null);
+});
+
+test('lema biasa yang memuat tanda tanya tidak disalahartikan sebagai pengalihan', () => {
+  const entry = parse('<b>ca·ha·ya</b> <em>n</em> sinar: <em>apakah itu ?</em>');
+  assert.equal(entry.word, 'cahaya');
+  assert.deepEqual(entry.relations, []);
+});
+
+test('nomor homonim berupa teks biasa tidak ikut menjadi nama kata', () => {
+  const entry = parse('<b>aib 1 </b><em>a</em> malu; cela');
+  assert.equal(entry.word, 'aib');
+  assert.equal(entry.homonym, 1);
+  assert.equal(entry.wordClass, 'a');
+});
+
+test('nomor homonim dalam sup tetap diutamakan', () => {
+  const entry = parse('<b>ga·bah<sup>2</sup></b> n butir padi');
+  assert.equal(entry.word, 'gabah');
+  assert.equal(entry.homonym, 2);
+  assert.equal(entry.displayWord, 'gabah 2');
 });
 
 test('bentuk terikat dikenali sebagai label, bukan kelas kata', () => {

@@ -196,15 +196,50 @@ async function openEntry(slug, { push = true } = {}) {
 
 const RELATION_ORDER = ['sinonim', 'antonim', 'hipernim', 'hiponim', 'meronim', 'holonim', 'rujukan', 'dirujuk oleh'];
 
+function pillTitle(item) {
+  const notes = [item.sourceLabel];
+  if (item.via) notes.push(`lewat bentuk turunan ${item.via}`);
+  if (item.hostWord) notes.push(`tercatat pada entri ${item.hostWord}`);
+  return notes.join(' · ');
+}
+
+function relationPills(items, type) {
+  return `<div class="pills">${items.map((item) =>
+    `<button class="pill ${type === 'antonim' ? 'antonim' : ''} ${item.slug ? 'clickable' : ''}" ${item.slug ? `data-slug="${escapeHtml(item.slug)}"` : 'disabled'} title="${escapeHtml(pillTitle(item))}">${escapeHtml(item.word)}</button>`
+  ).join('')}</div>`;
+}
+
+function directRelationHtml(groups) {
+  const types = [...RELATION_ORDER, ...Object.keys(groups).filter((type) => !RELATION_ORDER.includes(type))];
+  return types.filter((type) => groups[type]?.length).map((type) => {
+    const items = groups[type].slice(0, 28);
+    return `<div class="relation-group"><span>${escapeHtml(type)} · ${items.length}</span>${relationPills(items, type)}</div>`;
+  }).join('');
+}
+
+// Relasi turunan dikelompokkan menurut bentuk asalnya, bukan hanya menurut jenis,
+// supaya jelas bahwa "kesegaran" datang dari "kebugaran" dan bukan sinonim
+// langsung dari lema induknya.
+function derivedRelationHtml(items) {
+  if (!items?.length) return '';
+  const buckets = new Map();
+  for (const item of items) {
+    const key = `${item.via}␟${item.type}`;
+    if (!buckets.has(key)) buckets.set(key, { via: item.via, type: item.type, items: [] });
+    buckets.get(key).items.push(item);
+  }
+  const blocks = [...buckets.values()]
+    .sort((a, b) => b.items.length - a.items.length)
+    .slice(0, 8)
+    .map((bucket) => `<div class="relation-group derived"><span>lewat <b>${escapeHtml(bucket.via)}</b> · ${escapeHtml(bucket.type)} · ${bucket.items.length}</span>${relationPills(bucket.items.slice(0, 20), bucket.type)}</div>`)
+    .join('');
+  return `<section class="entry-section"><h3>Relasi lewat bentuk turunan</h3>${blocks}<p class="data-note">Lema ini tidak dikenal WordNet Bahasa, jadi yang ditampilkan adalah relasi milik bentuk turunannya. Kaitannya lebih longgar daripada relasi langsung dan perlu diperiksa sesuai konteks.</p><button class="graph-jump" type="button" data-view-graph>Lihat peta hubungan kata ↓</button></section>`;
+}
+
 function renderEntry(entry) {
   const groups = entry.relationGroups ?? {};
-  const types = [...RELATION_ORDER, ...Object.keys(groups).filter((type) => !RELATION_ORDER.includes(type))];
-  const relationHtml = types.filter((type) => groups[type]?.length).map((type) => {
-    const items = groups[type].slice(0, 28);
-    return `<div class="relation-group"><span>${escapeHtml(type)} · ${items.length}</span><div class="pills">${items.map((item) =>
-      `<button class="pill ${type === 'antonim' ? 'antonim' : ''} ${item.slug ? 'clickable' : ''}" ${item.slug ? `data-slug="${escapeHtml(item.slug)}"` : 'disabled'} title="${escapeHtml(item.sourceLabel)}">${escapeHtml(item.word)}</button>`
-    ).join('')}</div></div>`;
-  }).join('');
+  const relationHtml = directRelationHtml(groups);
+  const derivedHtml = relationHtml ? '' : derivedRelationHtml(entry.derivedRelations);
   const senses = entry.senses.length ? entry.senses.slice(0, 12).map((sense) => `
     <div class="sense"><span class="sense-no">${sense.number}</span><span>${escapeHtml(sense.text)}</span></div>`).join('') : '<p>Definisi terstruktur belum tersedia.</p>';
   const derivatives = entry.derivatives.slice(0, 24).map((item) => `
@@ -217,7 +252,7 @@ function renderEntry(entry) {
     <p class="entry-syllables">${escapeHtml(entry.syllables || entry.word)}${entry.pronunciation ? ` <span class="entry-pron">/${escapeHtml(entry.pronunciation)}/</span>` : ''}</p>
     ${labels ? `<div class="entry-tags">${labels}</div>` : ''}
     <section class="entry-section"><h3>Makna</h3>${senses}</section>
-    ${relationHtml ? `<section class="entry-section"><h3>Relasi semantik</h3>${relationHtml}<p class="data-note">Relasi WordNet dipetakan pada tingkat synset dan dapat mencakup makna yang berbeda. Periksa konteks sebelum digunakan.</p><button class="graph-jump" type="button" data-view-graph>Lihat peta hubungan kata ↓</button></section>` : ''}
+    ${relationHtml ? `<section class="entry-section"><h3>Relasi semantik</h3>${relationHtml}<p class="data-note">Relasi WordNet dipetakan pada tingkat synset dan dapat mencakup makna yang berbeda. Periksa konteks sebelum digunakan.</p><button class="graph-jump" type="button" data-view-graph>Lihat peta hubungan kata ↓</button></section>` : derivedHtml}
     ${derivatives ? `<section class="entry-section"><h3>Bentuk turunan & gabungan</h3><div class="derivative-list">${derivatives}</div></section>` : ''}
     <section class="entry-section"><h3>Naskah sumber lengkap</h3><div class="source-definition">${entry.definitionHtml}</div></section>
     <section class="entry-section"><div class="entry-actions"><a class="source-link" href="${escapeHtml(entry.sourceUrl)}" target="_blank" rel="noreferrer">Lihat halaman sumber di KBBI.web.id <span>↗</span></a><button class="copy-link" type="button" data-copy-link>Salin tautan entri</button></div><p class="data-note">Diambil ${new Date(entry.scrapedAt).toLocaleString('id-ID')}. Basis utama situs sumber mengacu pada KBBI Edisi III dan merupakan hak cipta Badan Bahasa.</p></section>`;
@@ -244,11 +279,16 @@ function takeInterleaved(lists, count) {
   return taken;
 }
 
+// Bila lema induk tidak dikenal WordNet, peta memakai relasi bentuk turunannya
+// dan menandainya dengan garis putus-putus serta keterangan di bawah legenda.
+const graphRelations = (entry) => (entry.relations?.length ? entry.relations : entry.derivedRelations ?? []);
+
 function collectGraphGroups(entry) {
   const needle = state.graphQuery.trim().toLocaleLowerCase('id');
   const matches = (item) => !needle || item.word.toLocaleLowerCase('id').includes(needle);
+  const source = graphRelations(entry);
   const groups = GRAPH_GROUPS.map((group) => {
-    const pool = entry.relations.filter((item) => group.types.includes(item.type));
+    const pool = source.filter((item) => group.types.includes(item.type));
     return {
       ...group,
       enabled: state.graphTypes.has(group.key),
@@ -287,7 +327,12 @@ function allocateGraphQuota(groups) {
 function graphEmptyMessage(entry, groups) {
   const word = entry.displayWord || entry.word;
   if (!groups.some((group) => group.enabled)) return 'Semua kategori dimatikan. Nyalakan salah satu legenda untuk menggambar jejaring.';
-  if (!groups.some((group) => group.total)) return `Relasi visual untuk “${word}” belum tersedia.`;
+  // Kekosongan di sini hampir selalu batas sumber data, bukan kegagalan sistem:
+  // jejaring berasal dari WordNet Bahasa yang kosakatanya jauh lebih sempit
+  // daripada KBBI, sementara halaman KBBI sendiri jarang menyebut sinonim.
+  if (!groups.some((group) => group.total)) {
+    return `“${word}” belum ada di WordNet Bahasa dan halaman sumbernya tidak menyebut sinonim, antonim, atau rujukan. Sekitar dua pertiga entri KBBI berada di luar jangkauan WordNet.`;
+  }
   if (state.graphQuery.trim()) return `Tidak ada simpul yang memuat “${state.graphQuery.trim()}” pada kategori terpilih.`;
   return `Kategori terpilih tidak memiliki relasi untuk “${word}”.`;
 }
@@ -299,6 +344,13 @@ function renderGraph(entry) {
   const groups = collectGraphGroups(entry);
   for (const group of groups) updateGraphLegend(group);
   $('#graph-reset').hidden = !state.graphQuery && state.graphTypes.size === GRAPH_GROUPS.length;
+  const derivedMode = !entry.relations?.length && Boolean(entry.derivedRelations?.length);
+  const note = $('#graph-note');
+  note.hidden = !derivedMode;
+  if (derivedMode) {
+    const sumber = [...new Set(entry.derivedRelations.map((item) => item.via))].slice(0, 3);
+    note.textContent = `“${entry.displayWord || entry.word}” belum ada di WordNet Bahasa. Yang digambar adalah relasi bentuk turunannya (${sumber.join(', ')}), jadi kaitannya lebih longgar.`;
+  }
   const visible = groups.flatMap((group) => group.visible).slice(0, GRAPH_BUDGET);
   $('#graph-empty').textContent = visible.length ? '' : graphEmptyMessage(entry, groups);
   $('#graph-empty').hidden = visible.length > 0;
@@ -313,9 +365,9 @@ function renderGraph(entry) {
     const y = cy + Math.sin(angle) * radiusY;
     const line = document.createElementNS(ns, 'line');
     line.setAttribute('x1', cx); line.setAttribute('y1', cy); line.setAttribute('x2', x); line.setAttribute('y2', y);
-    line.setAttribute('class', `graph-line ${nodeKind(item.type)}`);
+    line.setAttribute('class', `graph-line ${nodeKind(item.type)}${item.derived ? ' derived' : ''}`);
     svg.append(line);
-    addGraphNode(svg, { x, y, label: item.word, kind: nodeKind(item.type), slug: item.slug, radius: 31, type: item.type });
+    addGraphNode(svg, { x, y, label: item.word, kind: nodeKind(item.type), slug: item.slug, radius: 31, type: item.derived ? `${item.type} lewat ${item.via}` : item.type, derived: item.derived });
   });
   addGraphNode(svg, { x: cx, y: cy, label: entry.word, kind: 'center', slug: entry.slug, radius: 55 });
 }
@@ -370,10 +422,10 @@ function splitGraphLabel(label, maxChars = 11) {
   return [lines[0], `${lines.slice(1).join(' ').slice(0, maxChars - 1)}…`];
 }
 
-function addGraphNode(svg, { x, y, label, kind, slug, radius, type }) {
+function addGraphNode(svg, { x, y, label, kind, slug, radius, type, derived }) {
   const ns = 'http://www.w3.org/2000/svg';
   const group = document.createElementNS(ns, 'g');
-  group.setAttribute('class', `graph-node ${kind}`);
+  group.setAttribute('class', `graph-node ${kind}${derived ? ' derived' : ''}`);
   group.setAttribute('transform', `translate(${x} ${y})`);
   group.setAttribute('tabindex', '0');
   group.setAttribute('role', 'button');

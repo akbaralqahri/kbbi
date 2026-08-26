@@ -170,7 +170,28 @@ function summaryFor(row) {
   return stripped.replace(/^\d+\s*/, '').slice(0, 220);
 }
 
-const relationSlugStmt = db.prepare('SELECT slug FROM entries WHERE word = ? COLLATE NOCASE ORDER BY homonym LIMIT 1');
+// WordNet mendaftarkan bentuk berimbuhan sebagai lema tersendiri, sedangkan KBBI
+// menyimpannya di bawah lema induk. Pencarian tautan karena itu menelusuri tabel
+// lexemes: "bercahaya" tidak punya entri sendiri, tetapi tercatat di entri
+// "cahaya". Tanpa ini, hampir separuh relasi berakhir sebagai pil mati.
+const relationSlugStmt = db.prepare(`
+  SELECT l.entry_slug AS slug, l.kind, e.display_word AS host
+  FROM lexemes l JOIN entries e ON e.slug = l.entry_slug
+  WHERE l.word = ? COLLATE NOCASE
+  ORDER BY CASE l.kind WHEN 'lema' THEN 0 ELSE 1 END, COALESCE(e.homonym, 0)
+  LIMIT 1
+`);
+
+// Relasi milik bentuk turunan sebuah entri. Dipakai hanya ketika lema induknya
+// sendiri tidak dikenal WordNet, dan selalu ditandai asalnya supaya tidak terbaca
+// sebagai sinonim lema induk.
+const derivedRelationStmt = db.prepare(`
+  SELECT r.source_word AS via, r.target_word AS word, r.type, r.source, r.confidence, r.synset_id
+  FROM lexemes l JOIN relations r ON r.source_word = l.word COLLATE NOCASE
+  WHERE l.entry_slug = ? AND l.kind = 'turunan'
+  ORDER BY r.confidence DESC, r.target_word
+  LIMIT 90
+`);
 
 function getRelations(word) {
   const direct = db.prepare(`
@@ -190,14 +211,29 @@ function getRelations(word) {
   `).all(word).map((row) => ({ ...row, type: REVERSE_RELATION[row.type] ?? row.type }));
   const merged = new Map();
   for (const relation of [...direct, ...reverse]) {
-    const key = `${relation.type} ${relation.word.toLocaleLowerCase('id')}`;
+    const key = JSON.stringify([relation.type, relation.word.toLocaleLowerCase('id')]);
     if (!merged.has(key) || merged.get(key).confidence < relation.confidence) merged.set(key, relation);
   }
-  return [...merged.values()].map((item) => ({
+  return [...merged.values()].map(decorateRelation);
+}
+
+function decorateRelation(item) {
+  const match = relationSlugStmt.get(item.word);
+  return {
     ...item,
-    slug: relationSlugStmt.get(item.word)?.slug ?? null,
+    slug: match?.slug ?? null,
+    hostWord: match?.kind === 'turunan' ? match.host : null,
     sourceLabel: item.source === 'wordnet-bahasa' ? 'WordNet Bahasa' : 'KBBI (eksplisit)'
-  }));
+  };
+}
+
+function getDerivedRelations(slug) {
+  const merged = new Map();
+  for (const row of derivedRelationStmt.all(slug)) {
+    const key = JSON.stringify([row.type, row.word.toLocaleLowerCase('id')]);
+    if (!merged.has(key) || merged.get(key).confidence < row.confidence) merged.set(key, row);
+  }
+  return [...merged.values()].map((item) => ({ ...decorateRelation(item), derived: true }));
 }
 
 function getWord(slug) {
@@ -205,11 +241,14 @@ function getWord(slug) {
   if (!row) return null;
   const entry = hydrateEntry(row);
   const relations = getRelations(entry.word);
+  const derivedRelations = relations.length ? [] : getDerivedRelations(entry.slug);
   return {
     ...entry,
     wordClassLabel: CLASS_LABELS[entry.wordClass] ?? entry.wordClass,
     relations,
-    relationGroups: Object.groupBy(relations, (item) => item.type)
+    derivedRelations,
+    relationGroups: Object.groupBy(relations, (item) => item.type),
+    derivedRelationGroups: Object.groupBy(derivedRelations, (item) => item.type)
   };
 }
 

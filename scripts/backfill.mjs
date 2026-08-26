@@ -25,6 +25,8 @@ function main() {
     mode: APPLY ? 'apply' : 'audit',
     entriesScanned: rows.length,
     parseFailed: 0,
+    wordCorrected: 0,
+    redirectsResolved: 0,
     classGained: 0,
     classCorrected: 0,
     classLost: 0,
@@ -34,7 +36,7 @@ function main() {
     summaryCleaned: 0,
     entriesChanged: 0
   };
-  const samples = { kelas: [], label: [], makna: [], hilang: [] };
+  const samples = { kelas: [], label: [], makna: [], hilang: [], kata: [] };
   const pending = [];
 
   const currentSummaries = new Map(
@@ -59,6 +61,12 @@ function main() {
     const oldSummary = currentSummaries.get(row.slug) ?? '';
 
     let changed = false;
+    if (entry.word !== row.word) {
+      report.wordCorrected += 1;
+      changed = true;
+      if (samples.kata.length < 8) samples.kata.push(JSON.stringify(row.word) + " -> " + JSON.stringify(entry.word));
+    }
+    if (entry.relations.some((item) => item.type === "rujukan" && item.source === "kbbi-explicit")) report.redirectsResolved += 1;
     if (!row.word_class && entry.wordClass) {
       report.classGained += 1;
       changed = true;
@@ -96,6 +104,8 @@ function main() {
   }
 
   console.log(JSON.stringify(report, null, 2));
+  console.log('\nContoh nama kata yang dibetulkan:');
+  for (const line of samples.kata) console.log(`  - ${line}`);
   console.log('\nContoh kelas kata yang dipulihkan:');
   for (const line of samples.kelas) console.log(`  - ${line}`);
   console.log('\nContoh label baru:');
